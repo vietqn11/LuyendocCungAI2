@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Công cụ Ghi âm và Chuyển đổi Base64</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: sans-serif;
+            background-color: #f0f9ff;
+            color: #334155;
+        }
+        .container {
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 2rem;
+            background-color: white;
+            border-radius: 1.5rem;
+            box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        #waveform {
+            width: 100%;
+            height: 100px;
+            background-color: #f1f5f9;
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="text-center">
+            <h1 class="text-3xl font-bold text-blue-800">Công cụ Ghi âm & Chuyển đổi Base64</h1>
+            <p class="mt-2 text-slate-600">Dành riêng cho ứng dụng Luyện đọc Tiếng Việt Lớp 2</p>
+        </div>
+
+        <div class="mt-8 p-4 bg-yellow-100 border-l-4 border-yellow-400 text-yellow-800 rounded-r-lg">
+            <h3 class="font-bold">Hướng dẫn:</h3>
+            <ol class="list-decimal list-inside mt-2 text-sm">
+                <li>Nhấn "Bắt đầu ghi âm" và đọc to, rõ ràng bài học.</li>
+                <li>Khi đọc xong, nhấn "Dừng ghi âm & Lấy mã".</li>
+                <li>Nhấn "Sao chép mã" và dán vào file <code>constants/audioSamples.ts</code>.</li>
+            </ol>
+        </div>
+
+        <div class="mt-8 flex flex-col sm:flex-row gap-4 justify-center">
+            <button id="startButton" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-xl transition">
+                Bắt đầu ghi âm
+            </button>
+            <button id="stopButton" class="w-full sm:w-auto bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-xl transition" disabled>
+                Dừng ghi âm & Lấy mã
+            </button>
+        </div>
+
+        <div class="mt-4 text-center">
+             <p id="status" class="text-slate-500 h-6"></p>
+             <canvas id="waveform"></canvas>
+        </div>
+
+        <div class="mt-8">
+            <label for="base64Output" class="block text-lg font-semibold text-slate-700">Mã Base64 (dán vào code):</label>
+            <textarea id="base64Output" rows="8" class="w-full mt-2 p-3 border-2 border-slate-200 rounded-xl bg-slate-50 font-mono text-sm" readonly placeholder="Mã base64 sẽ hiện ở đây..."></textarea>
+            <button id="copyButton" class="mt-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition w-full" disabled>Sao chép mã</button>
+        </div>
+    </div>
+
+    <script>
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const copyButton = document.getElementById('copyButton');
+        const statusEl = document.getElementById('status');
+        const outputEl = document.getElementById('base64Output');
+        const waveformCanvas = document.getElementById('waveform');
+        const canvasCtx = waveformCanvas.getContext('2d');
+
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioContext;
+        let analyser;
+        let dataArray;
+        let animationFrameId;
+
+        const TARGET_SAMPLE_RATE = 24000;
+
+        startButton.addEventListener('click', async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                const source = audioContext.createMediaStreamSource(stream);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 2048;
+                source.connect(analyser);
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+                
+                mediaRecorder = new MediaRecorder(stream);
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    statusEl.textContent = 'Đang xử lý âm thanh...';
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const arrayBuffer = await audioBlob.arrayBuffer();
+
+                    // Decode to AudioBuffer
+                    const decodedAudioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                    
+                    // Resample to target sample rate (24000 Hz)
+                    const offlineCtx = new OfflineAudioContext(
+                        decodedAudioBuffer.numberOfChannels,
+                        decodedAudioBuffer.duration * TARGET_SAMPLE_RATE,
+                        TARGET_SAMPLE_RATE
+                    );
+                    const bufferSource = offlineCtx.createBufferSource();
+                    bufferSource.buffer = decodedAudioBuffer;
+                    bufferSource.connect(offlineCtx.destination);
+                    bufferSource.start();
+
+                    const resampledBuffer = await offlineCtx.startRendering();
+                    
+                    // Convert to 16-bit PCM
+                    const pcmData = to16BitPCM(resampledBuffer);
+
+                    // Convert to Base64
+                    const base64String = btoa(String.fromCharCode.apply(null, new Uint8Array(pcmData.buffer)));
+
+                    outputEl.value = base64String;
+                    statusEl.textContent = '✅ Hoàn thành! Sẵn sàng để sao chép.';
+                    copyButton.disabled = false;
+                    audioChunks = [];
+                    stream.getTracks().forEach(track => track.stop());
+                    audioContext.close();
+                    cancelAnimationFrame(animationFrameId);
+                    clearWaveform();
+                };
+
+                mediaRecorder.start();
+                startButton.disabled = true;
+                stopButton.disabled = false;
+                copyButton.disabled = true;
+                outputEl.value = '';
+                statusEl.textContent = '🔴 Đang ghi âm...';
+                drawWaveform();
+
+            } catch (err) {
+                console.error("Error starting recording:", err);
+                statusEl.textContent = 'Lỗi: Không thể truy cập micro.';
+            }
+        });
+
+        stopButton.addEventListener('click', () => {
+            mediaRecorder.stop();
+            startButton.disabled = false;
+            stopButton.disabled = true;
+        });
+
+        copyButton.addEventListener('click', () => {
+            outputEl.select();
+            document.execCommand('copy');
+            statusEl.textContent = '👍 Đã sao chép vào bộ nhớ tạm!';
+        });
+
+        function to16BitPCM(audioBuffer) {
+            const numChannels = 1; // Mono
+            const inputData = audioBuffer.getChannelData(0);
+            const outputData = new Int16Array(inputData.length);
+            for (let i = 0; i < inputData.length; i++) {
+                let s = Math.max(-1, Math.min(1, inputData[i]));
+                outputData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            return outputData;
+        }
+        
+        function drawWaveform() {
+            animationFrameId = requestAnimationFrame(drawWaveform);
+            analyser.getByteTimeDomainData(dataArray);
+
+            canvasCtx.fillStyle = '#f1f5f9';
+            canvasCtx.fillRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+            canvasCtx.lineWidth = 2;
+            canvasCtx.strokeStyle = '#3b82f6';
+            canvasCtx.beginPath();
+
+            const sliceWidth = waveformCanvas.width * 1.0 / analyser.frequencyBinCount;
+            let x = 0;
+
+            for (let i = 0; i < analyser.frequencyBinCount; i++) {
+                const v = dataArray[i] / 128.0;
+                const y = v * waveformCanvas.height / 2;
+
+                if (i === 0) {
+                    canvasCtx.moveTo(x, y);
+                } else {
+                    canvasCtx.lineTo(x, y);
+                }
+                x += sliceWidth;
+            }
+
+            canvasCtx.lineTo(waveformCanvas.width, waveformCanvas.height / 2);
+            canvasCtx.stroke();
+        }
+
+        function clearWaveform() {
+             canvasCtx.fillStyle = '#f1f5f9';
+             canvasCtx.fillRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+        }
+
+    </script>
+</body>
+</html>
